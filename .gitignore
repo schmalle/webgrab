@@ -1,1 +1,5 @@
 ./testdata/cov.txt
+/build/libs/
+/build/classes/
+/build/distributions/
+/build/kotlin/
