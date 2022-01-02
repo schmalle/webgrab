@@ -8,6 +8,7 @@ import java.io.File
 import java.security.MessageDigest
 
 
+
 private val hexArray = "0123456789ABCDEF".toCharArray()
 
 data class library(var checksum: String, var length: String, var detail: String, var status: String)
