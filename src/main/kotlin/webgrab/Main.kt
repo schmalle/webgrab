@@ -3,10 +3,12 @@ package webgrab
 import kotlinx.cli.ArgParser
 import kotlinx.cli.ArgType
 import kotlinx.cli.default
+import kotlinx.coroutines.*
 import org.jsoup.Jsoup
 import java.io.File
+import java.net.URL
+import java.net.URLConnection
 import java.security.MessageDigest
-
 
 
 private val hexArray = "0123456789ABCDEF".toCharArray()
@@ -70,58 +72,92 @@ fun hashString(type: String, input: String): ByteArray {
 }
 
 
-fun scan(baseURL: String, verbose: Boolean, dump: Boolean) {
+fun scanJSIncludes(baseURL: String, verbose: Boolean, dump: Boolean, dumpDir: String) {
 
-    val doc = Jsoup.connect(baseURL).get()
+    try {
+//This will get you the response.
 
-    val urls = mutableSetOf<String>()
+        val myUrl = URL(baseURL)
+        val urlConn: URLConnection = myUrl.openConnection()
+        urlConn.connect()
 
-    var runner = 0
+        var  headerName="";
+        var runner = 1
 
-    doc.select("script").forEach {
+        while (urlConn.getHeaderFieldKey(runner) != null && urlConn != null) {
+            headerName = urlConn.getHeaderFieldKey(runner)
+            var headerValue = urlConn.getHeaderField(runner)
+            println("$headerName : $headerValue")
+            runner++;
+        }
 
-        var scriptSource = it.attr("src")
-        if (scriptSource.length > 2) {
-
-            if (verbose) println("Run: " + runner + " Scriptsource: " + scriptSource)
 
 
-            if (!scriptSource.startsWith("http")) {
-                if (verbose) println("scriptsource did not start with http... script source = " + scriptSource)
-                scriptSource = baseURL + scriptSource
+        runner = 0
+
+        var doc = Jsoup
+            .connect(baseURL)
+            .ignoreContentType(true)
+            .timeout(2000).get()
+
+        doc.select("script").forEach {
+
+
+            var scriptSource = it.attr("src")
+            if (scriptSource.length > 2) {
+
+                if (verbose) println("Run: " + runner + " Scriptsource: " + scriptSource)
+                
+                if (!scriptSource.startsWith("http")) {
+                    if (verbose) println("scriptsource did not start with http... script source = " + scriptSource)
+                    scriptSource = baseURL + scriptSource
+                }
+
+                if (verbose) println("Connecting to...source = " + scriptSource)
+
+                val bytes = Jsoup.connect(scriptSource)
+                    .header("Accept-Encoding", "gzip, deflate")
+                    .userAgent("Mozilla/5.0 (Windows NT 6.1; WOW64; rv:23.0) Gecko/20100101 Firefox/23.0")
+                    .referrer(baseURL)
+                    .ignoreContentType(true)
+                    .maxBodySize(0)
+                    .timeout(2000)
+                    .execute()
+                    .bodyAsBytes()
+
+                val hash = bytesToHex(sha256(bytes))
+
+                println("Size of " + scriptSource + " " + bytes.size + " with hash " + hash)
+
+                if (dump) {
+                    val fileName = dumpDir + "/" + hash
+                    val myfile = File(fileName)
+                    myfile.writeBytes(bytes)
+                }
+
             }
-
-
-            if (verbose) println("Connecting to...source = " + scriptSource)
-
-            val bytes = Jsoup.connect(scriptSource)
-                .header("Accept-Encoding", "gzip, deflate")
-                .userAgent("Mozilla/5.0 (Windows NT 6.1; WOW64; rv:23.0) Gecko/20100101 Firefox/23.0")
-                .referrer(baseURL)
-                .ignoreContentType(true)
-                .maxBodySize(0)
-                .timeout(600000)
-                .execute()
-                .bodyAsBytes()
-
-            val hash = bytesToHex(sha256(bytes))
-
-            println("Size of " + scriptSource + " " + bytes.size + " with hash " + hash)
-
-
         }   // if script source is > 2
 
 
+    } // try
+    catch (e: java.net.SocketTimeoutException) {
+        println("Info: Unable to connect to URL $baseURL (SocketTimeout)")
+    }
+    catch (e: java.net.NoRouteToHostException) {
+        println("Info: Unable to connect/no route to  URL $baseURL")
     }
 
+    catch (e: java.net.UnknownHostException) {
+        println("Info: Unknown hosts at $baseURL")
+    }
 }
 
 
-fun main(args: Array<String>) {
+fun main(args: Array<String>) = runBlocking {
 
     val parser = ArgParser("webgrab")
 
-    var input by parser.option(ArgType.String, shortName = "i", description = "input URL").default("https://www.heise.de")
+    var input by parser.option(ArgType.String, shortName = "i", description = "input URL").default("https://httpbin.org/cookies/set?http-only-cookie=test;%20httponly")
     var inputList by parser.option(ArgType.String, shortName = "iL", description = "input URL list").default("")
     var output by parser.option(ArgType.String, shortName = "o", description = "Output file name").default("")
     var dumpDir by parser.option(ArgType.String, shortName = "dD", description = "Name of dump directory").default("./dump/")
@@ -132,11 +168,9 @@ fun main(args: Array<String>) {
 
     parser.parse(args)
 
-    inputList = "./testdata/urls.txt"
-
     if (inputList.length < 2) {
-        println("Scanning single URL: " + input)
-        scan(input, verbose, dump)
+        if (verbose) println("Scanning single URL: " + input)
+        scanJSIncludes(input, verbose, dump, dumpDir)
     } else {
 
         println("Scanning URL list at " + inputList)
@@ -145,13 +179,22 @@ fun main(args: Array<String>) {
             lines.forEach {
 
                 var url:String = it
-                if (url.startsWith("http")) { scan(url, verbose, dump) }
+                if (url.startsWith("http")) { scanJSIncludes(url, verbose, dump, dumpDir) }
                 else {
 
-                    print("Scanning URL " + url)
+                    // URL list entry without http lead
 
-                    scan("http://" + url, verbose, dump)
-                    scan("https://" + url, verbose, dump)
+                    if (verbose) println("Scanning URL " + url)
+
+                        launch {
+                            scanJSIncludes("http://" + url, verbose, dump, dumpDir)
+
+                        }
+
+                    launch {
+
+                        scanJSIncludes("https://" + url, verbose, dump, dumpDir)
+                    }
 
                 }
 
